@@ -45,19 +45,50 @@ def main(params, lake_geometry="lakes.json"):
                                       "p10": metadata[lake]["p10"],
                                       "p90": metadata[lake]["p90"],
                                       })
-                # Add human readable info for tiles (not per lake)
-
-                # Sync to buckets
-                """x = {"datetime": d["datetime"], "name": d["key"].split("/")[-1],
-                 "url": "{}/{}".format(bucket_url, d["key"]),
-                 "valid_pixels": "{}%".format(round(float(d["valid_pixels"]) / float(max_pixels) * 100))}"""
                 os.makedirs(os.path.dirname(lake_metadata_file), exist_ok=True)
                 with open(lake_metadata_file, 'w') as f:
                     json.dump(lake_metadata, f, separators=(',', ':'))
+
+                public_metadata_file = os.path.join(params["local_metadata"], metadata_file_path + "_public.json")
+                if os.path.isfile(public_metadata_file):
+                    with open(public_metadata_file, 'r') as f:
+                        public_metadata = json.load(f)
+                else:
+                    public_metadata = []
+                public_metadata = [l for l in public_metadata if l["k"] != metadata[lake]["file"]]
+                public_metadata.append({
+                    "datetime": properties["date"],
+                    "name": os.path.basename(file),
+                     "url": functions.uri_to_url(os.path.join(params["remote_tiff"], file)),
+                     "valid_pixels": "{}%".format(round(float(metadata[lake]["valid_pixels"]) / float(metadata[lake]["pixels"]) * 100))
+                })
+                with open(public_metadata_file, 'w') as f:
+                    json.dump(public_metadata, f, separators=(',', ':'))
+
+                filtered = [d for d in lake_metadata if d['vp'] / d['p'] > 0.1]
+                if len(filtered) > 0:
+                    sorted_list = sorted(filtered, key=lambda x: x['dt'])
+                    latest = sorted_list[-1]
+                    if len(filtered) > 1:
+                        try:
+                            for i in range(2, min(len(filtered), 5) + 1):
+                                if sorted_list[-i]["dt"][:8] == latest["dt"][:8] and sorted_list[-i]["vp"] > latest[
+                                    "vp"]:
+                                    latest = sorted_list[-i]
+                        except:
+                            print("Failed to check for same day image with more pixels")
+                    with open(os.path.join(params["local_metadata"], metadata_file_path + "_latest.json"), 'w') as f:
+                        json.dump(latest, f, separators=(',', ':'))
         except Exception as e:
             raise
             print(e)
             failed.append(file)
+
+    if params["upload"]:
+        print("Uploading to remote")
+        # Sync cropped tiffs to remote
+        # Sync metadata to remote
+        # Need to sort credentials
 
     if len(failed) > 0:
         raise ValueError("Failed for: {}".format(", ".join(failed)))

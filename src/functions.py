@@ -163,6 +163,11 @@ def extract_tiff_subsection(input_file, output_dir, geojson, small_view=500):
     return metadata
 
 
+def uri_to_url(uri):
+    parts = uri.split("/")
+    return "https://{}.s3.eu-central-1.amazonaws.com/{}".format(parts[2], "/".join(parts[3:]))
+
+
 def properties_from_filename(filename):
     parts = os.path.splitext(os.path.basename(filename))[0].split("_")
     if len(parts[-1]) == 15:
