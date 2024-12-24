@@ -1,5 +1,7 @@
 import os
 import json
+
+import matplotlib.pyplot as plt
 import requests
 import subprocess
 import numpy as np
@@ -19,17 +21,13 @@ def download_file(url, save_path):
         url (str): The URL of the file to download.
         save_path (str): The local path where the file should be saved.
     """
-    # Send a GET request to the URL
     response = requests.get(url)
-
-    # Check if the request was successful
     if response.status_code == 200:
-        # Open the file in binary write mode and save the content
         with open(save_path, "wb") as file:
             file.write(response.content)
-        print(f"File downloaded successfully to {save_path}")
+        return True
     else:
-        print(f"Failed to download file. Status code: {response.status_code}")
+        return False
 
 
 def polygon_raster_mask(raster, geometry):
@@ -98,6 +96,8 @@ def extract_tiff_subsection(input_file, output_dir, geojson, small_view=500):
     else:
         band = raster.GetRasterBand(1).ReadAsArray()
 
+    metadata = {}
+
     for lake in geojson["features"]:
         key = lake["properties"]["key"]
 
@@ -120,6 +120,17 @@ def extract_tiff_subsection(input_file, output_dir, geojson, small_view=500):
         temp_file = os.path.join(output_dir, key,  "{}_temp{}".format(name, extension))
         main_file = os.path.join(output_dir, key, "{}_{}{}".format(name, key, extension))
         lowres_file = os.path.join(output_dir, key, "{}_{}_lowres{}".format(name, key, extension))
+
+        metadata[key] = {
+            "pixels": np.count_nonzero(mask_geometry == 1),
+            "valid_pixels": np.count_nonzero(~np.isnan(cropped_band)),
+            "min": np.round(np.nanmin(cropped_band).astype(np.float64),5),
+            "max": np.round(np.nanmax(cropped_band).astype(np.float64),5),
+            "mean": np.round(np.nanmean(cropped_band).astype(np.float64),5),
+            "p10": np.round(np.nanpercentile(cropped_band, 10),5),
+            "p90": np.round(np.nanpercentile(cropped_band, 90),5),
+            "file": os.path.basename(main_file)
+        }
 
         driver = gdal.GetDriverByName("GTiff")
         out_dataset = driver.Create(temp_file, max_x_pixel - min_x_pixel, max_y_pixel - min_y_pixel, 1, gdal.GDT_Float32)
@@ -147,6 +158,34 @@ def extract_tiff_subsection(input_file, output_dir, geojson, small_view=500):
             gdal.Warp(lowres_file, dataset, xRes=geo_transform[1]*scale_factor, yRes=geo_transform[5]*scale_factor, resampleAlg=gdal.GRA_Bilinear)
             if os.path.getsize(lowres_file) > os.path.getsize(main_file):
                 os.remove(lowres_file)
+            else:
+                metadata[key]["file"] = os.path.basename(lowres_file)
+    return metadata
+
+
+def properties_from_filename(filename):
+    parts = os.path.splitext(os.path.basename(filename))[0].split("_")
+    if len(parts[-1]) == 15:
+        tile = None
+        date = parts[-1]
+        satellite = parts[-2]
+        processor = parts[0]
+        parameter = "_".join(parts[1:-2])
+    else:
+        tile = parts[-1]
+        date = parts[-2]
+        satellite = parts[-3]
+        processor = parts[0]
+        parameter = "_".join(parts[1:-3])
+
+    return {
+        "processor": processor,
+        "parameter": parameter,
+        "satellite": satellite,
+        "date": date,
+        "tile": tile
+    }
+
 
 
 def rclone_sync(remote, local_dir, dry_run=False):
