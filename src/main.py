@@ -88,7 +88,7 @@ def main(params, lake_geometry="lakes.json"):
         print("Uploading to remote")
         # Sync cropped tiffs to remote
         # Sync metadata to remote
-        # Need to sort credentials
+        # Need to sort credentials - should be in env
 
     if len(failed) > 0:
         raise ValueError("Failed for: {}".format(", ".join(failed)))
@@ -97,14 +97,12 @@ def main(params, lake_geometry="lakes.json"):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--remote_tiff', '-rt', help="URI of remote tiff folder", type=str)
-    parser.add_argument('--local_tiff', '-lt', help="Path of local tiff folder", type=str)
+    parser.add_argument('--local_tiff', '-lt', help="Path of local tiff folder", type=str, default="/local_tiff")
     parser.add_argument('--remote_tiff_cropped', '-rtc', help="URI of remote cropped tiff folder", type=str, default=False)
-    parser.add_argument('--local_tiff_cropped', '-ltc', help="Path of local cropped tiff folder", type=str)
+    parser.add_argument('--local_tiff_cropped', '-ltc', help="Path of local cropped tiff folder", type=str, default="/local_tiff_cropped")
     parser.add_argument('--lake_geometry', '-g', help="URL of lakes geojson", type=str)
     parser.add_argument('--remote_metadata', '-rm', help="URI of remote metadata folder", type=str)
-    parser.add_argument('--local_metadata', '-lm', help="Path of local metadata folder", type=str)
+    parser.add_argument('--local_metadata', '-lm', help="Path of local metadata folder", type=str, default="/local_metadata")
     parser.add_argument('--upload', '-u', help='Upload cropped files', action='store_true')
-    parser.add_argument('--aws_id', '-i', help="AWS access key id", type=str, default=False)
-    parser.add_argument('--aws_key', '-k', help="AWS secret access key", type=str, default=False)
     args = parser.parse_args()
     main(vars(args))
