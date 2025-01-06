@@ -1,7 +1,5 @@
 import os
 import json
-
-import matplotlib.pyplot as plt
 import requests
 import subprocess
 import numpy as np
@@ -88,6 +86,7 @@ def extract_tiff_subsection(input_file, output_dir, geojson, small_view=500):
     raster = gdal.Open(input_file)
     geotransform = raster.GetGeoTransform()
     projection = raster.GetProjection()
+    file_metadata = raster.GetMetadata()
 
     if raster.RasterCount == 2:
         band = raster.GetRasterBand(1).ReadAsArray()
@@ -114,7 +113,7 @@ def extract_tiff_subsection(input_file, output_dir, geojson, small_view=500):
         if np.isnan(cropped_band).all():
             continue
 
-        print("Processing {}".format(key))
+        print("  Extracting lake {}".format(key))
         os.makedirs(os.path.join(output_dir, key), exist_ok=True)
         name, extension = os.path.splitext(os.path.basename(input_file))
         temp_file = os.path.join(output_dir, key,  "{}_temp{}".format(name, extension))
@@ -129,8 +128,12 @@ def extract_tiff_subsection(input_file, output_dir, geojson, small_view=500):
             "mean": np.round(np.nanmean(cropped_band).astype(np.float64),5),
             "p10": np.round(np.nanpercentile(cropped_band, 10),5),
             "p90": np.round(np.nanpercentile(cropped_band, 90),5),
-            "file": os.path.basename(main_file)
+            "file": os.path.basename(main_file),
+            "commit": file_metadata["Commit Hash"] if "Commit Hash" in file_metadata else "False",
+            "reproduce": file_metadata["Reproduce"] if "Reproduce" in file_metadata else "False"
         }
+
+
 
         driver = gdal.GetDriverByName("GTiff")
         out_dataset = driver.Create(temp_file, max_x_pixel - min_x_pixel, max_y_pixel - min_y_pixel, 1, gdal.GDT_Float32)
@@ -191,9 +194,23 @@ def properties_from_filename(filename):
         "tile": tile
     }
 
+def get_latest(file_list):
+    if len(file_list) == 0:
+        return {}
+    sorted_list = sorted(file_list, key=lambda x: x['dt'])
+    latest = sorted_list[-1]
+    if len(file_list) > 1:
+        try:
+            for i in range(2, min(len(file_list), 5) + 1):
+                if sorted_list[-i]["dt"][:8] == latest["dt"][:8] and sorted_list[-i]["vp"] > latest[
+                    "vp"]:
+                    latest = sorted_list[-i]
+        except:
+            print("Failed to check for same day image with more pixels")
+    return latest
 
 
-def rclone_sync(remote, local_dir, dry_run=False):
+def rclone_sync(remote, local_dir, dry_run=False, extension="*.tif"):
     """
     Compare files between the local directory and the remote, and return three lists:
     - Added: Files that are in remote but not in local.
@@ -201,9 +218,7 @@ def rclone_sync(remote, local_dir, dry_run=False):
     - Removed: Files that are in local but not in remote.
     """
     os.makedirs(local_dir, exist_ok=True)
-    command = [
-        "rclone", "sync", remote, local_dir, "--include", "*.tif"
-    ]
+    command = ["rclone", "sync", remote, local_dir, "--include", extension]
     if dry_run:
         command.append("--dry-run")
 

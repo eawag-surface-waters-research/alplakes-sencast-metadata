@@ -1,1 +1,3 @@
 # Sencast Alplakes Metadata
+
+docker run -e AWS_ACCESS_KEY_ID=XXXXXXXX -e AWS_SECRET_ACCESS_KEY=XXXXXXXX -v /home/runnalja/git/alplakes/sencast-metadata:/repository -v /home/runnalja/git/alplakes/sencast-metadata/data/input/collection:/local_tiff -v /home/runnalja/git/alplakes/sencast-metadata/data/input/collection_output:/local_tiff_cropped -v /home/runnalja/git/alplakes/sencast-metadata/metadata/collection:/local_metadata --rm eawag/sencast-metadata:1.0.0 -u -rt s3://eawagrs/datalakes/collection/alplakes -rtc data/input/collection_output -g https://eawagrs.s3.eu-central-1.amazonaws.com/metadata/lakes.json -rm s3://eawagrs/alplakes/metadata/collection

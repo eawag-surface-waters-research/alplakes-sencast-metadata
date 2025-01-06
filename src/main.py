@@ -2,7 +2,6 @@ import os
 import json
 import argparse
 import functions
-from src.functions import download_file
 
 
 def main(params, lake_geometry="lakes.json"):
@@ -13,7 +12,7 @@ def main(params, lake_geometry="lakes.json"):
         return
 
     functions.rclone_sync(params["remote_tiff"], params["local_tiff"])
-    functions.rclone_sync(params["remote_metadata"], params["local_metadata"])
+    functions.rclone_sync(params["remote_metadata"], params["local_metadata"], extension="*.json")
     if not os.path.exists(lake_geometry):
         functions.download_file(params["lake_geometry"], lake_geometry)
     with open(lake_geometry, 'r') as f:
@@ -21,6 +20,7 @@ def main(params, lake_geometry="lakes.json"):
 
     failed = []
     for file in added_files:
+        print("Adding: {}".format(file))
         try:
             properties = functions.properties_from_filename(file)
             metadata = functions.extract_tiff_subsection(os.path.join(params["local_tiff"], file),
@@ -44,6 +44,8 @@ def main(params, lake_geometry="lakes.json"):
                                       "mean": metadata[lake]["mean"],
                                       "p10": metadata[lake]["p10"],
                                       "p90": metadata[lake]["p90"],
+                                      "c": metadata[lake]["commit"],
+                                      "r": metadata[lake]["reproduce"]
                                       })
                 os.makedirs(os.path.dirname(lake_metadata_file), exist_ok=True)
                 with open(lake_metadata_file, 'w') as f:
@@ -53,9 +55,9 @@ def main(params, lake_geometry="lakes.json"):
                 if os.path.isfile(public_metadata_file):
                     with open(public_metadata_file, 'r') as f:
                         public_metadata = json.load(f)
+                    public_metadata = [l for l in public_metadata if l["name"] != metadata[lake]["file"]]
                 else:
                     public_metadata = []
-                public_metadata = [l for l in public_metadata if l["k"] != metadata[lake]["file"]]
                 public_metadata.append({
                     "datetime": properties["date"],
                     "name": os.path.basename(file),
@@ -67,28 +69,52 @@ def main(params, lake_geometry="lakes.json"):
 
                 filtered = [d for d in lake_metadata if d['vp'] / d['p'] > 0.1]
                 if len(filtered) > 0:
-                    sorted_list = sorted(filtered, key=lambda x: x['dt'])
-                    latest = sorted_list[-1]
-                    if len(filtered) > 1:
-                        try:
-                            for i in range(2, min(len(filtered), 5) + 1):
-                                if sorted_list[-i]["dt"][:8] == latest["dt"][:8] and sorted_list[-i]["vp"] > latest[
-                                    "vp"]:
-                                    latest = sorted_list[-i]
-                        except:
-                            print("Failed to check for same day image with more pixels")
-                    with open(os.path.join(params["local_metadata"], metadata_file_path + "_latest.json"), 'w') as f:
-                        json.dump(latest, f, separators=(',', ':'))
+                    latest = functions.get_latest(filtered)
+                else:
+                    latest = {}
+                with open(os.path.join(params["local_metadata"], metadata_file_path + "_latest.json"), 'w') as f:
+                    json.dump(latest, f, separators=(',', ':'))
         except Exception as e:
-            raise
+            os.remove(os.path.join(params["local_tiff"], file))
+            print(e)
+            failed.append(file)
+
+    for file in removed_files:
+        print("Removing: {}".format(file))
+        try:
+            properties = functions.properties_from_filename(file)
+            for lake in os.listdir(params["local_metadata"]):
+                metadata_file_path = os.path.join(params["local_metadata"], lake, properties["parameter"])
+                meta_file =  metadata_file_path + ".json"
+                public_file = metadata_file_path + "_public.json"
+                if os.path.isfile(meta_file):
+                    with open(meta_file, 'r') as f:
+                        meta = json.load(f)
+                    if len([i for i in meta if os.path.splitext(os.path.basename(file))[0] in i["k"]]) > 0:
+                        meta = [i for i in meta if os.path.splitext(os.path.basename(file))[0] not in i["k"]]
+                        latest = functions.get_latest([d for d in meta if d['vp'] / d['p'] > 0.1])
+                        with open(metadata_file_path + "_latest.json", 'w') as f:
+                            print("   Deleting from: {}".format(metadata_file_path + "_latest.json"))
+                            json.dump(latest, f, separators=(',', ':'))
+                        with open(meta_file, 'w') as f:
+                            print("   Deleting from: {}".format(meta_file))
+                            json.dump(meta, f, separators=(',', ':'))
+                if os.path.isfile(public_file):
+                    with open(public_file, 'r') as f:
+                        public = json.load(f)
+                    if len([i for i in public if i["name"] == os.path.basename(file)]) > 0:
+                        public = [i for i in public if i["name"] != os.path.basename(file)]
+                        with open(public_file, 'w') as f:
+                            print("   Deleting from: {}".format(public_file))
+                            json.dump(public, f, separators=(',', ':'))
+        except Exception as e:
             print(e)
             failed.append(file)
 
     if params["upload"]:
         print("Uploading to remote")
-        # Sync cropped tiffs to remote
-        # Sync metadata to remote
-        # Need to sort credentials - should be in env
+        functions.rclone_sync(params["local_tiff_cropped"], params["remote_tiff_cropped"])
+        functions.rclone_sync(params["local_metadata"], params["remote_metadata"], extension="*.json")
 
     if len(failed) > 0:
         raise ValueError("Failed for: {}".format(", ".join(failed)))
@@ -103,6 +129,6 @@ if __name__ == "__main__":
     parser.add_argument('--lake_geometry', '-g', help="URL of lakes geojson", type=str)
     parser.add_argument('--remote_metadata', '-rm', help="URI of remote metadata folder", type=str)
     parser.add_argument('--local_metadata', '-lm', help="Path of local metadata folder", type=str, default="/local_metadata")
-    parser.add_argument('--upload', '-u', help='Upload cropped files', action='store_true')
+    parser.add_argument('--upload', '-u', help='Upload cropped files and metadata', action='store_true')
     args = parser.parse_args()
     main(vars(args))
