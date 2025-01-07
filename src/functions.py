@@ -100,6 +100,9 @@ def extract_tiff_subsection(input_file, output_dir, geojson, small_view=500):
     for lake in geojson["features"]:
         key = lake["properties"]["key"]
 
+        if lake["geometry"]["coordinates"][0][0] != lake["geometry"]["coordinates"][0][-1]:
+            lake["geometry"]["coordinates"][0].append(lake["geometry"]["coordinates"][0][0])
+
         polygon_geometry = ogr.CreateGeometryFromJson(json.dumps(lake["geometry"]))
         min_x_pixel, min_y_pixel, max_x_pixel, max_y_pixel, min_x, min_y = pixel_coordinates(raster, polygon_geometry)
 
