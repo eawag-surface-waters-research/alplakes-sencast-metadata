@@ -111,6 +111,10 @@ def main(params, lake_geometry="lakes.json"):
             print(e)
             failed.append(file)
 
+    if "metadata_summary" in params:
+        print("Checking for metadata summary updates")
+        functions.metadata_summary(params["metadata_summary"], params["metadata_name"], os.path.abspath(params["local_metadata"]))
+
     if params["upload"]:
         print("Uploading to remote")
         functions.rclone_sync(params["local_tiff_cropped"], params["remote_tiff_cropped"])
@@ -128,6 +132,8 @@ if __name__ == "__main__":
     parser.add_argument('--local_tiff_cropped', '-ltc', help="Path of local cropped tiff folder", type=str, default="/local_tiff_cropped")
     parser.add_argument('--lake_geometry', '-g', help="URL of lakes geojson", type=str)
     parser.add_argument('--remote_metadata', '-rm', help="URI of remote metadata folder", type=str)
+    parser.add_argument('--metadata_summary', '-ms', help="URI of remote metadata summary", type=str)
+    parser.add_argument('--metadata_name', '-mn', help="Name of dataset in metadata summary", type=str)
     parser.add_argument('--local_metadata', '-lm', help="Path of local metadata folder", type=str, default="/local_metadata")
     parser.add_argument('--upload', '-u', help='Upload cropped files and metadata', action='store_true')
     args = parser.parse_args()

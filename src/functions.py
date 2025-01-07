@@ -1,5 +1,6 @@
 import os
 import json
+import tempfile
 import requests
 import subprocess
 import numpy as np
@@ -26,6 +27,33 @@ def download_file(url, save_path):
         return True
     else:
         return False
+
+
+def metadata_summary(uri, name, folder):
+    edits = False
+    try:
+        response = requests.get(uri_to_url(uri))
+        summary = response.json()
+    except Exception as e:
+        summary = {}
+    for lake in os.listdir(folder):
+        if lake not in summary:
+            summary[lake] = {}
+        parameters = list(set([f.replace(".json", "") for f in os.listdir(os.path.join(folder, lake)) if "_latest" not in f and "_public" not in f]))
+        parameters.sort()
+        if name not in summary[lake] or parameters != summary[lake][name]:
+            edits = True
+            summary[lake][name] = parameters
+    if edits:
+        print("   Uploading edited metadata file")
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=True) as temp_file:
+            json.dump(summary, temp_file, separators=(',', ':'))
+            temp_file.flush()
+            try:
+                subprocess.run(["rclone", "copyto", temp_file.name, uri, "--s3-no-check-bucket"], check=True)
+            except Exception as e:
+                print(e)
+                print("Failed to upload summary file")
 
 
 def polygon_raster_mask(raster, geometry):
