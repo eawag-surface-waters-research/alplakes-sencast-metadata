@@ -12,6 +12,90 @@ if conda_env_path:
     os.environ["PROJ_DATA"] = proj_data_path
 
 
+def add_file(file, local_tiff, local_tiff_cropped, local_metadata, remote_tiff, geometry):
+    print("Adding: {}".format(file))
+    properties = properties_from_filename(file)
+    metadata = extract_tiff_subsection(os.path.join(local_tiff, file), local_tiff_cropped, geometry)
+    for lake in metadata.keys():
+        metadata_file_path = os.path.join(lake, properties["parameter"])
+        lake_metadata_file = os.path.join(local_metadata, metadata_file_path + ".json")
+        if os.path.isfile(lake_metadata_file):
+            with open(lake_metadata_file, 'r') as f:
+                lake_metadata = json.load(f)
+        else:
+            lake_metadata = []
+        lake_metadata = [l for l in lake_metadata if l["k"] != metadata[lake]["file"]]
+        lake_metadata.append({"dt": properties["date"],
+                              "k": metadata[lake]["file"],
+                              "p": metadata[lake]["pixels"],
+                              "vp": metadata[lake]["valid_pixels"],
+                              "min": metadata[lake]["min"],
+                              "max": metadata[lake]["max"],
+                              "mean": metadata[lake]["mean"],
+                              "p10": metadata[lake]["p10"],
+                              "p90": metadata[lake]["p90"],
+                              "c": metadata[lake]["commit"],
+                              "r": metadata[lake]["reproduce"]
+                              })
+        os.makedirs(os.path.dirname(lake_metadata_file), exist_ok=True)
+        with open(lake_metadata_file, 'w') as f:
+            json.dump(lake_metadata, f, separators=(',', ':'))
+
+        public_metadata_file = os.path.join(local_metadata, metadata_file_path + "_public.json")
+        if os.path.isfile(public_metadata_file):
+            with open(public_metadata_file, 'r') as f:
+                public_metadata = json.load(f)
+            public_metadata = [l for l in public_metadata if l["name"] != metadata[lake]["file"]]
+        else:
+            public_metadata = []
+        public_metadata.append({
+            "datetime": properties["date"],
+            "name": os.path.basename(file),
+            "url": uri_to_url(os.path.join(remote_tiff, file)),
+            "valid_pixels": "{}%".format(
+                round(float(metadata[lake]["valid_pixels"]) / float(metadata[lake]["pixels"]) * 100))
+        })
+        with open(public_metadata_file, 'w') as f:
+            json.dump(public_metadata, f, separators=(',', ':'))
+
+        filtered = [d for d in lake_metadata if d['vp'] / d['p'] > 0.1]
+        if len(filtered) > 0:
+            latest = get_latest(filtered)
+        else:
+            latest = {}
+        with open(os.path.join(local_metadata, metadata_file_path + "_latest.json"), 'w') as f:
+            json.dump(latest, f, separators=(',', ':'))
+
+
+def remove_file(file, local_metadata):
+    print("Removing: {}".format(file))
+    properties = properties_from_filename(file)
+    for lake in os.listdir(local_metadata):
+        metadata_file_path = os.path.join(local_metadata, lake, properties["parameter"])
+        meta_file = metadata_file_path + ".json"
+        public_file = metadata_file_path + "_public.json"
+        if os.path.isfile(meta_file):
+            with open(meta_file, 'r') as f:
+                meta = json.load(f)
+            if len([i for i in meta if os.path.splitext(os.path.basename(file))[0] in i["k"]]) > 0:
+                meta = [i for i in meta if os.path.splitext(os.path.basename(file))[0] not in i["k"]]
+                latest = get_latest([d for d in meta if d['vp'] / d['p'] > 0.1])
+                with open(metadata_file_path + "_latest.json", 'w') as f:
+                    print("   Deleting from: {}".format(metadata_file_path + "_latest.json"))
+                    json.dump(latest, f, separators=(',', ':'))
+                with open(meta_file, 'w') as f:
+                    print("   Deleting from: {}".format(meta_file))
+                    json.dump(meta, f, separators=(',', ':'))
+        if os.path.isfile(public_file):
+            with open(public_file, 'r') as f:
+                public = json.load(f)
+            if len([i for i in public if i["name"] == os.path.basename(file)]) > 0:
+                public = [i for i in public if i["name"] != os.path.basename(file)]
+                with open(public_file, 'w') as f:
+                    print("   Deleting from: {}".format(public_file))
+                    json.dump(public, f, separators=(',', ':'))
+
+
 def download_file(url, save_path):
     """
     Downloads a file from a given URL and saves it to the specified path.
@@ -163,8 +247,6 @@ def extract_tiff_subsection(input_file, output_dir, geojson, small_view=500):
             "commit": file_metadata["Commit Hash"] if "Commit Hash" in file_metadata else "False",
             "reproduce": file_metadata["Reproduce"] if "Reproduce" in file_metadata else "False"
         }
-
-
 
         driver = gdal.GetDriverByName("GTiff")
         out_dataset = driver.Create(temp_file, max_x_pixel - min_x_pixel, max_y_pixel - min_y_pixel, 1, gdal.GDT_Float32)
