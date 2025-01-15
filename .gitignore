@@ -1,4 +1,5 @@
 lakes.json
+lakes.geojson
 data
 src/__pycache__/
 .idea

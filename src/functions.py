@@ -110,7 +110,7 @@ def download_file(url, save_path):
             file.write(response.content)
         return True
     else:
-        return False
+        raise ValueError("Failed to download from: {}".format(url))
 
 
 def metadata_summary(uri, name, folder):
