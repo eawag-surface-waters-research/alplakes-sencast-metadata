@@ -221,7 +221,7 @@ def extract_tiff_subsection(input_file, output_dir, geojson, small_view=500):
         if max_x_pixel < 0 or max_y_pixel < 0 or min_x_pixel > raster.RasterXSize or min_y_pixel > raster.RasterYSize:
             continue
 
-        cropped_band = band[min_y_pixel:max_y_pixel, min_x_pixel:max_x_pixel]
+        cropped_band = np.copy(band[min_y_pixel:max_y_pixel, min_x_pixel:max_x_pixel])
         mask_geometry = polygon_raster_mask(raster, polygon_geometry)
         cropped_band[mask_geometry[min_y_pixel:max_y_pixel, min_x_pixel:max_x_pixel] != 1] = np.nan
 
