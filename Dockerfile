@@ -1,4 +1,4 @@
-FROM continuumio/miniconda3:4.12.0
+FROM condaforge/miniforge3:25.3.1-0
 RUN apt update && apt upgrade -y
 RUN apt-get update
 RUN apt-get install -y curl unzip
