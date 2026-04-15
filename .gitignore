@@ -1,6 +1,8 @@
-lakes.json
-lakes.geojson
+/lakes.json
+/lakes.geojson
 data
 src/__pycache__/
+tests/__pycache__/
 .idea
 metadata/
+.pytest_cache/

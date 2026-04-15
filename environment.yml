@@ -6,4 +6,5 @@ dependencies:
   - gdal=3.6.2
   - numpy=1.26.4
   - requests
+  - pytest
 prefix:
