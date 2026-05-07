@@ -10,6 +10,8 @@ This dockerized code operates as follows:
 - Iterate over the changes, parse the GeoTiff files, extract metadata and produce lake subsets
 - Sync metadata and lake subsets to an S3 bucket
 
+A local folder of GeoTiff files can also be processed in place — pass a filesystem path to `--remote_tiff` instead of an S3 URI and the rclone sync step is skipped. Outputs that target local paths (no `://` in the URI) are written directly without uploading.
+
 ## Getting started
 
 ### 1. Clone repository
@@ -30,14 +32,19 @@ For a full list of options run
 python src/main.py -h
 ```
 
-#### Example python call
+#### Example python call (S3)
 ```console
-python src/main.py -u -rt s3://bucket/tiff -rtc s3://bucket/tiff_cropped -g https://eawagrs.s3.eu-central-1.amazonaws.com/metadata/lakes.json -rm s3://bucket/metadata 
+python src/main.py -u -rt s3://bucket/tiff -rtc s3://bucket/tiff_cropped -g https://eawagrs.s3.eu-central-1.amazonaws.com/alplakes/metadata/lakes.geojson -rm s3://bucket/metadata 
+```
+
+#### Example python call (local folder)
+```console
+python src/main.py -rt /path/to/local/tiffs -ltc /path/to/cropped -lm /path/to/metadata -g https://eawagrs.s3.eu-central-1.amazonaws.com/alplakes/metadata/lakes.geojson
 ```
 
 Example docker call
 ```console
-docker run -e AWS_ACCESS_KEY_ID=XXXXXXXX -e AWS_SECRET_ACCESS_KEY=XXXXXXXX -v /home/user/alplakes-sencast-metadata:/repository -v /home/user/local_tiff:/local_tiff -v /home/user/local_tiff_cropped:/local_tiff_cropped -v /home/user/local_metadata:/local_metadata --rm eawag/sencast-metadata:1.0.0 -u -rt s3://bucket/tiff -rtc s3://bucket/tiff_cropped -g https://eawagrs.s3.eu-central-1.amazonaws.com/metadata/lakes.json -rm s3://bucket/metadata
+docker run -e AWS_ACCESS_KEY_ID=XXXXXXXX -e AWS_SECRET_ACCESS_KEY=XXXXXXXX -v /home/user/alplakes-sencast-metadata:/repository -v /home/user/local_tiff:/local_tiff -v /home/user/local_tiff_cropped:/local_tiff_cropped -v /home/user/local_metadata:/local_metadata --rm eawag/sencast-metadata:1.0.0 -u -rt s3://bucket/tiff -rtc s3://bucket/tiff_cropped -g https://eawagrs.s3.eu-central-1.amazonaws.com/alplakes/metadata/lakes.geojson -rm s3://bucket/metadata
 ```
 
 [mit-by]: https://opensource.org/licenses/MIT

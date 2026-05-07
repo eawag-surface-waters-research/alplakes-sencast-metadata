@@ -63,8 +63,10 @@ def test_full_pipeline_matches_golden(tmp_path):
     tiff_files = list(local_tiff.glob("*.tif"))
     assert tiff_files, f"No TIFFs downloaded from {remote_tiff}"
 
-    # Load lake geometry (use the full lakes.geojson if available, else fixture)
-    lakes_path = FIXTURES_DIR / "lakes.geojson"
+    # Integration uses a real Lake Geneva polygon (the unit-test fixture's
+    # synthetic test_lake is in a different region and doesn't overlap the
+    # ST/tsm sample TIFFs).
+    lakes_path = FIXTURES_DIR / "lakes_integration.geojson"
     with open(lakes_path) as f:
         geojson = json.load(f)
 

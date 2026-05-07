@@ -1,10 +1,15 @@
 import os
+import re
 import json
+import logging
 import tempfile
 import requests
 import subprocess
+from datetime import datetime
 import numpy as np
 from osgeo import gdal, ogr, osr
+
+logger = logging.getLogger(__name__)
 
 conda_env_path = os.environ.get("CONDA_PREFIX")
 if conda_env_path:
@@ -12,88 +17,131 @@ if conda_env_path:
     os.environ["PROJ_DATA"] = proj_data_path
 
 
+def is_remote(path):
+    return isinstance(path, str) and "://" in path
+
+
+def update_json(path, mutate, default=None):
+    if os.path.isfile(path):
+        with open(path, "r") as f:
+            data = json.load(f)
+    else:
+        data = [] if default is None else default
+    data = mutate(data)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(data, f, separators=(",", ":"))
+    return data
+
+def _is_set(v):
+    if v is None or v is False:
+        return False
+    if isinstance(v, str) and v.lower() == "false":
+        return False
+    return True
+
+
+def _filter_geometry(geometry, lakes_arg):
+    if not _is_set(lakes_arg):
+        return geometry, []
+    new_lakes = [l.strip() for l in lakes_arg.split(",")]
+    logger.info("Only parsing new lakes: %s", new_lakes)
+    keys = {f["properties"]["key"] for f in geometry["features"]}
+    geometry = {**geometry, "features": [f for f in geometry["features"] if f["properties"]["key"] in new_lakes]}
+    missing = [x for x in new_lakes if x not in keys]
+    return geometry, missing
+
+
+def _period_filter(period_arg):
+    if not _is_set(period_arg):
+        return None
+    start_end = period_arg.split("_")
+    start = datetime.strptime(start_end[0], "%Y%m%d")
+    end = datetime.strptime(start_end[1], "%Y%m%d")
+    logger.info("Only processing files between %s and %s", start, end)
+
+    def matches(filename):
+        match = re.search(r"\d{8}T\d{6}", filename)
+        if not match:
+            return True
+        dt = datetime.strptime(match.group(0), "%Y%m%dT%H%M%S")
+        return start <= dt <= end
+
+    return matches
+
+
+def _walk_tiffs(root_dir):
+    """Yield TIFF paths relative to root_dir."""
+    for root, _dirs, files in os.walk(root_dir):
+        for file in files:
+            if file.endswith(".tif"):
+                yield os.path.join(os.path.relpath(root, root_dir), file)
+
+
 def add_file(file, local_tiff, local_tiff_cropped, local_metadata, remote_tiff, geometry):
-    print("Adding: {}".format(file))
+    logger.info("Adding: %s", file)
     properties = properties_from_filename(file)
     metadata = extract_tiff_subsection(os.path.join(local_tiff, file), local_tiff_cropped, geometry)
     for lake in metadata.keys():
-        metadata_file_path = os.path.join(lake, properties["parameter"])
-        lake_metadata_file = os.path.join(local_metadata, metadata_file_path + ".json")
-        if os.path.isfile(lake_metadata_file):
-            with open(lake_metadata_file, 'r') as f:
-                lake_metadata = json.load(f)
-        else:
-            lake_metadata = []
-        lake_metadata = [l for l in lake_metadata if l["k"] != metadata[lake]["file"]]
-        lake_metadata.append({"dt": properties["date"],
-                              "k": metadata[lake]["file"],
-                              "p": metadata[lake]["pixels"],
-                              "vp": metadata[lake]["valid_pixels"],
-                              "min": metadata[lake]["min"],
-                              "max": metadata[lake]["max"],
-                              "mean": metadata[lake]["mean"],
-                              "p10": metadata[lake]["p10"],
-                              "p90": metadata[lake]["p90"],
-                              "c": metadata[lake]["commit"],
-                              "r": metadata[lake]["reproduce"]
-                              })
-        os.makedirs(os.path.dirname(lake_metadata_file), exist_ok=True)
-        with open(lake_metadata_file, 'w') as f:
-            json.dump(lake_metadata, f, separators=(',', ':'))
+        m = metadata[lake]
+        base = os.path.join(local_metadata, lake, properties["parameter"])
 
-        public_metadata_file = os.path.join(local_metadata, metadata_file_path + "_public.json")
-        if os.path.isfile(public_metadata_file):
-            with open(public_metadata_file, 'r') as f:
-                public_metadata = json.load(f)
-            public_metadata = [l for l in public_metadata if l["name"] != metadata[lake]["file"]]
-        else:
-            public_metadata = []
-        public_metadata.append({
-            "datetime": properties["date"],
-            "name": os.path.basename(file),
-            "url": uri_to_url(os.path.join(remote_tiff, file)),
-            "valid_pixels": "{}%".format(
-                round(float(metadata[lake]["valid_pixels"]) / float(metadata[lake]["pixels"]) * 100))
-        })
-        with open(public_metadata_file, 'w') as f:
-            json.dump(public_metadata, f, separators=(',', ':'))
+        def upsert_full(data, m=m, properties=properties):
+            data = [l for l in data if l["k"] != m["file"]]
+            data.append({"dt": properties["date"], "k": m["file"], "p": m["pixels"],
+                         "vp": m["valid_pixels"], "min": m["min"], "max": m["max"],
+                         "mean": m["mean"], "p10": m["p10"], "p90": m["p90"],
+                         "c": m["commit"], "r": m["reproduce"]})
+            return data
 
-        filtered = [d for d in lake_metadata if d['vp'] / d['p'] > 0.1]
-        if len(filtered) > 0:
-            latest = get_latest(filtered)
-        else:
-            latest = {}
-        with open(os.path.join(local_metadata, metadata_file_path + "_latest.json"), 'w') as f:
-            json.dump(latest, f, separators=(',', ':'))
+        full = update_json(base + ".json", upsert_full)
+
+        def upsert_public(data, m=m, properties=properties, file=file):
+            data = [l for l in data if l["name"] != m["file"]]
+            data.append({
+                "datetime": properties["date"],
+                "name": os.path.basename(file),
+                "url": uri_to_url(os.path.join(remote_tiff, file)),
+                "valid_pixels": "{}%".format(round(float(m["valid_pixels"]) / float(m["pixels"]) * 100)),
+            })
+            return data
+
+        update_json(base + "_public.json", upsert_public)
+
+        filtered = [d for d in full if d['vp'] / d['p'] > 0.1]
+        latest = get_latest(filtered) if filtered else {}
+        update_json(base + "_latest.json", lambda _: latest, default={})
 
 
 def remove_file(file, local_metadata):
-    print("Removing: {}".format(file))
+    logger.info("Removing: %s", file)
     properties = properties_from_filename(file)
+    stem = os.path.splitext(os.path.basename(file))[0]
+    name = os.path.basename(file)
+    if not os.path.isdir(local_metadata):
+        return
     for lake in os.listdir(local_metadata):
-        metadata_file_path = os.path.join(local_metadata, lake, properties["parameter"])
-        meta_file = metadata_file_path + ".json"
-        public_file = metadata_file_path + "_public.json"
+        base = os.path.join(local_metadata, lake, properties["parameter"])
+        meta_file = base + ".json"
+        public_file = base + "_public.json"
+
         if os.path.isfile(meta_file):
-            with open(meta_file, 'r') as f:
+            with open(meta_file, "r") as f:
                 meta = json.load(f)
-            if len([i for i in meta if os.path.splitext(os.path.basename(file))[0] in i["k"]]) > 0:
-                meta = [i for i in meta if os.path.splitext(os.path.basename(file))[0] not in i["k"]]
+            if any(stem in i["k"] for i in meta):
+                meta = [i for i in meta if stem not in i["k"]]
+                logger.info("Deleting from: %s", meta_file)
+                update_json(meta_file, lambda _: meta)
                 latest = get_latest([d for d in meta if d['vp'] / d['p'] > 0.1])
-                with open(metadata_file_path + "_latest.json", 'w') as f:
-                    print("   Deleting from: {}".format(metadata_file_path + "_latest.json"))
-                    json.dump(latest, f, separators=(',', ':'))
-                with open(meta_file, 'w') as f:
-                    print("   Deleting from: {}".format(meta_file))
-                    json.dump(meta, f, separators=(',', ':'))
+                logger.info("Deleting from: %s", base + "_latest.json")
+                update_json(base + "_latest.json", lambda _: latest, default={})
+
         if os.path.isfile(public_file):
-            with open(public_file, 'r') as f:
+            with open(public_file, "r") as f:
                 public = json.load(f)
-            if len([i for i in public if i["name"] == os.path.basename(file)]) > 0:
-                public = [i for i in public if i["name"] != os.path.basename(file)]
-                with open(public_file, 'w') as f:
-                    print("   Deleting from: {}".format(public_file))
-                    json.dump(public, f, separators=(',', ':'))
+            if any(i["name"] == name for i in public):
+                logger.info("Deleting from: %s", public_file)
+                update_json(public_file, lambda _: [i for i in public if i["name"] != name])
 
 
 def download_file(url, save_path):
@@ -104,6 +152,7 @@ def download_file(url, save_path):
         url (str): The URL of the file to download.
         save_path (str): The local path where the file should be saved.
     """
+    logger.info("Downloading %s -> %s", url, save_path)
     response = requests.get(url)
     if response.status_code == 200:
         with open(save_path, "wb") as file:
@@ -129,25 +178,34 @@ def metadata_summary(uri, name, folder):
             edits = True
             summary[lake][name] = parameters
     if edits:
-        print("   Uploading edited metadata file")
+        logger.info("Uploading edited metadata file")
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=True) as temp_file:
             json.dump(summary, temp_file, separators=(',', ':'))
             temp_file.flush()
             try:
                 subprocess.run(["rclone", "copyto", temp_file.name, uri, "--s3-no-check-bucket"], check=True)
-            except Exception as e:
-                print(e)
-                print("Failed to upload summary file")
+            except Exception:
+                logger.exception("Failed to upload summary file")
+    else:
+        logger.info("No metadata summary changes")
 
 
-def polygon_raster_mask(raster, geometry):
+def polygon_raster_mask(raster, geometry, window):
     """
-    Creates a raster mask based on a polygon and a input raster
+    Creates a raster mask for a polygon, sized to the cropped window rather than
+    the full source raster.
 
     Parameters:
-    - raster (gdal.Dataset): Opened gdal.Dataset file
-    - geometry (ogr.Geometry): Polygon as a ogr.Geometry object.
+    - raster (gdal.Dataset): Opened gdal.Dataset file (used for projection + pixel size).
+    - geometry (ogr.Geometry): Polygon as an ogr.Geometry object.
+    - window (tuple): (min_x_pixel, min_y_pixel, max_x_pixel, max_y_pixel, min_x, min_y)
+        as returned by ``pixel_coordinates``.
     """
+    min_x_pixel, min_y_pixel, max_x_pixel, max_y_pixel, min_x, min_y = window
+    width = max_x_pixel - min_x_pixel
+    height = max_y_pixel - min_y_pixel
+    src_geotransform = raster.GetGeoTransform()
+
     driver = ogr.GetDriverByName("Memory")
     data_source = driver.CreateDataSource("temp")
     spatial_ref = osr.SpatialReference()
@@ -160,8 +218,9 @@ def polygon_raster_mask(raster, geometry):
     feature.SetField("id", 1)
     layer.CreateFeature(feature)
     mask_driver = gdal.GetDriverByName("MEM")
-    mask_raster = mask_driver.Create("", raster.RasterXSize, raster.RasterYSize, 1, gdal.GDT_Byte)
-    mask_raster.SetGeoTransform(raster.GetGeoTransform())
+    mask_raster = mask_driver.Create("", width, height, 1, gdal.GDT_Byte)
+    mask_raster.SetGeoTransform((min_x, src_geotransform[1], src_geotransform[2],
+                                 min_y, src_geotransform[4], src_geotransform[5]))
     mask_raster.SetProjection(raster.GetProjection())
     gdal.RasterizeLayer(mask_raster, [1], layer, burn_values=[1])  # Inside polygon = 1
     mask_geometry = mask_raster.GetRasterBand(1).ReadAsArray()
@@ -216,19 +275,22 @@ def extract_tiff_subsection(input_file, output_dir, geojson, small_view=500):
             lake["geometry"]["coordinates"][0].append(lake["geometry"]["coordinates"][0][0])
 
         polygon_geometry = ogr.CreateGeometryFromJson(json.dumps(lake["geometry"]))
-        min_x_pixel, min_y_pixel, max_x_pixel, max_y_pixel, min_x, min_y = pixel_coordinates(raster, polygon_geometry)
+        window = pixel_coordinates(raster, polygon_geometry)
+        min_x_pixel, min_y_pixel, max_x_pixel, max_y_pixel, min_x, min_y = window
 
         if max_x_pixel < 0 or max_y_pixel < 0 or min_x_pixel > raster.RasterXSize or min_y_pixel > raster.RasterYSize:
+            logger.debug("Skipping lake %s: outside raster bounds", key)
             continue
 
         cropped_band = np.copy(band[min_y_pixel:max_y_pixel, min_x_pixel:max_x_pixel])
-        mask_geometry = polygon_raster_mask(raster, polygon_geometry)
-        cropped_band[mask_geometry[min_y_pixel:max_y_pixel, min_x_pixel:max_x_pixel] != 1] = np.nan
+        mask_geometry = polygon_raster_mask(raster, polygon_geometry, window)
+        cropped_band[mask_geometry != 1] = np.nan
 
         if np.isnan(cropped_band).all():
+            logger.debug("Skipping lake %s: all pixels NaN", key)
             continue
 
-        print("  Extracting lake {}".format(key))
+        logger.info("Extracting lake %s", key)
         os.makedirs(os.path.join(output_dir, key), exist_ok=True)
         name, extension = os.path.splitext(os.path.basename(input_file))
         temp_file = os.path.join(output_dir, key,  "{}_temp{}".format(name, extension))
@@ -280,8 +342,10 @@ def extract_tiff_subsection(input_file, output_dir, geojson, small_view=500):
 
 
 def uri_to_url(uri):
-    parts = uri.split("/")
-    return "https://{}.s3.eu-central-1.amazonaws.com/{}".format(parts[2], "/".join(parts[3:]))
+    if uri.startswith("s3://"):
+        parts = uri.split("/")
+        return "https://{}.s3.eu-central-1.amazonaws.com/{}".format(parts[2], "/".join(parts[3:]))
+    return "file://" + os.path.abspath(uri)
 
 
 def properties_from_filename(filename):
@@ -318,8 +382,8 @@ def get_latest(file_list):
                 if sorted_list[-i]["dt"][:8] == latest["dt"][:8] and sorted_list[-i]["vp"] > latest[
                     "vp"]:
                     latest = sorted_list[-i]
-        except:
-            print("Failed to check for same day image with more pixels")
+        except Exception:
+            logger.exception("Failed to check for same day image with more pixels")
     return latest
 
 
@@ -335,6 +399,7 @@ def rclone_sync(remote, local_dir, dry_run=False, extension="*.tif"):
     if dry_run:
         command.append("--dry-run")
 
+    logger.debug("rclone %s", " ".join(command))
     result = subprocess.run(command, capture_output=True, text=True, check=True)
 
     if dry_run:
@@ -348,6 +413,7 @@ def rclone_sync(remote, local_dir, dry_run=False, extension="*.tif"):
             elif "Skipped delete as" in line:
                 removed_files.append(line.split(": Skipped")[0].split("NOTICE: ")[1])
 
+        logger.debug("rclone dry-run: %d added, %d removed", len(added_files), len(removed_files))
         return added_files, removed_files
     else:
         return
