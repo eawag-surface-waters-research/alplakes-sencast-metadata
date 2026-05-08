@@ -82,8 +82,10 @@ def add_file(file, local_tiff, local_tiff_cropped, local_metadata, remote_tiff, 
     logger.info("Adding: %s", file)
     properties = properties_from_filename(file)
     metadata = extract_tiff_subsection(os.path.join(local_tiff, file), local_tiff_cropped, geometry)
+    cropped_files = []
     for lake in metadata.keys():
         m = metadata[lake]
+        cropped_files.extend(m.get("cropped_files", []))
         base = os.path.join(local_metadata, lake, properties["parameter"])
 
         def upsert_full(data, m=m, properties=properties):
@@ -111,6 +113,7 @@ def add_file(file, local_tiff, local_tiff_cropped, local_metadata, remote_tiff, 
         filtered = [d for d in full if d['vp'] / d['p'] > 0.1]
         latest = get_latest(filtered) if filtered else {}
         update_json(base + "_latest.json", lambda _: latest, default={})
+    return cropped_files
 
 
 def remove_file(file, local_metadata):
@@ -307,7 +310,8 @@ def extract_tiff_subsection(input_file, output_dir, geojson, small_view=500):
             "p90": np.round(np.nanpercentile(cropped_band, 90),5),
             "file": os.path.basename(main_file),
             "commit": file_metadata["Commit Hash"] if "Commit Hash" in file_metadata else "False",
-            "reproduce": file_metadata["Reproduce"] if "Reproduce" in file_metadata else "False"
+            "reproduce": file_metadata["Reproduce"] if "Reproduce" in file_metadata else "False",
+            "cropped_files": [main_file],
         }
 
         driver = gdal.GetDriverByName("GTiff")
@@ -338,6 +342,7 @@ def extract_tiff_subsection(input_file, output_dir, geojson, small_view=500):
                 os.remove(lowres_file)
             else:
                 metadata[key]["file"] = os.path.basename(lowres_file)
+                metadata[key]["cropped_files"].append(lowres_file)
     return metadata
 
 
@@ -387,6 +392,15 @@ def get_latest(file_list):
     return latest
 
 
+RCLONE_PERF_FLAGS = [
+    "--transfers", "16",
+    "--checkers", "32",
+    "--fast-list",
+    "--s3-no-check-bucket",
+    "--s3-upload-concurrency", "8",
+]
+
+
 def rclone_sync(remote, local_dir, dry_run=False, extension="*.tif"):
     """
     Compare files between the local directory and the remote, and return three lists:
@@ -395,7 +409,7 @@ def rclone_sync(remote, local_dir, dry_run=False, extension="*.tif"):
     - Removed: Files that are in local but not in remote.
     """
     os.makedirs(local_dir, exist_ok=True)
-    command = ["rclone", "sync", remote, local_dir, "--include", extension]
+    command = ["rclone", "sync", remote, local_dir, "--include", extension] + RCLONE_PERF_FLAGS
     if dry_run:
         command.append("--dry-run")
 
@@ -417,3 +431,25 @@ def rclone_sync(remote, local_dir, dry_run=False, extension="*.tif"):
         return added_files, removed_files
     else:
         return
+
+
+def rclone_copy_files(src_root, dst_root, rel_paths):
+    """
+    Copy a known list of files between src_root and dst_root using --files-from
+    and --no-traverse, so rclone never lists the destination tree.
+    """
+    if not rel_paths:
+        return
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+        f.write("\n".join(rel_paths))
+        list_path = f.name
+    try:
+        command = [
+            "rclone", "copy", src_root, dst_root,
+            "--files-from", list_path,
+            "--no-traverse",
+        ] + RCLONE_PERF_FLAGS
+        logger.debug("rclone %s", " ".join(command))
+        subprocess.run(command, check=True)
+    finally:
+        os.remove(list_path)

@@ -50,7 +50,12 @@ def run(params, lake_geometry="lakes.geojson"):
         if not added_files and not removed_files:
             logger.info("No updates, exiting.")
             return
-        functions.rclone_sync(source, local_tiff)
+        logger.info("Downloading %d new tiff(s)", len(added_files))
+        functions.rclone_copy_files(source, local_tiff, added_files)
+        for rel in removed_files:
+            local_path = os.path.join(local_tiff, rel)
+            if os.path.isfile(local_path):
+                os.remove(local_path)
     else:
         added_files = list(functions._walk_tiffs(local_tiff))
         removed_files = []
@@ -60,13 +65,17 @@ def run(params, lake_geometry="lakes.geojson"):
     added_count = 0
     skipped_count = 0
     removed_count = 0
+    cropped_to_upload = []
+    local_cropped_root = os.path.abspath(params["local_tiff_cropped"])
     for file in added_files:
         if period_match and not period_match(file):
             skipped_count += 1
             continue
         try:
-            functions.add_file(file, local_tiff, params["local_tiff_cropped"], params["local_metadata"],
-                               source, geometry)
+            cropped = functions.add_file(file, local_tiff, params["local_tiff_cropped"], params["local_metadata"],
+                                         source, geometry)
+            for path in cropped or []:
+                cropped_to_upload.append(os.path.relpath(os.path.abspath(path), local_cropped_root))
             added_count += 1
         except Exception:
             full_path = os.path.join(local_tiff, file)
@@ -90,8 +99,13 @@ def run(params, lake_geometry="lakes.geojson"):
                                        os.path.abspath(params["local_metadata"]))
 
         if functions.is_remote(params["remote_tiff_cropped"]):
-            logger.info("Uploading cropped tiffs to remote")
-            functions.rclone_sync(params["local_tiff_cropped"], params["remote_tiff_cropped"])
+            if cropped_to_upload:
+                logger.info("Uploading %d cropped tiff(s) to remote", len(cropped_to_upload))
+                functions.rclone_copy_files(params["local_tiff_cropped"],
+                                            params["remote_tiff_cropped"],
+                                            cropped_to_upload)
+            else:
+                logger.info("No new cropped tiffs to upload")
         if functions.is_remote(params["remote_metadata"]):
             logger.info("Uploading metadata to remote")
             functions.rclone_sync(params["local_metadata"], params["remote_metadata"], extension="*.json")
