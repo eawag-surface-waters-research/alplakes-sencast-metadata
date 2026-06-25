@@ -285,6 +285,10 @@ def extract_tiff_subsection(input_file, output_dir, geojson, small_view=500):
             logger.debug("Skipping lake %s: outside raster bounds", key)
             continue
 
+        if max_x_pixel - min_x_pixel <= 0 or max_y_pixel - min_y_pixel <= 0:
+            logger.debug("Skipping lake %s: empty cropped window", key)
+            continue
+
         cropped_band = np.copy(band[min_y_pixel:max_y_pixel, min_x_pixel:max_x_pixel])
         mask_geometry = polygon_raster_mask(raster, polygon_geometry, window)
         cropped_band[mask_geometry != 1] = np.nan
