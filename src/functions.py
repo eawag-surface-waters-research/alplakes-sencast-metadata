@@ -258,7 +258,14 @@ def pixel_coordinates(raster, geometry):
 
 def extract_tiff_subsection(input_file, output_dir, geojson, small_view=500):
     raster = gdal.Open(input_file)
+    if raster is None:
+        logger.warning("Skipping %s: unable to open raster", input_file)
+        return {}
     geotransform = raster.GetGeoTransform()
+    if geotransform[1] == 0 or geotransform[5] == 0:
+        logger.warning("Skipping %s: invalid geotransform %s (corrupt or not georeferenced)",
+                       input_file, geotransform)
+        return {}
     projection = raster.GetProjection()
     file_metadata = raster.GetMetadata()
 
